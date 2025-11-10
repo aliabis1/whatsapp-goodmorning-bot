@@ -1,0 +1,24 @@
+Twilio Sender whatsapp id +14155238886
+account_sid": "ACc69882f0f843832694efbdebb6c46ab5
+Auth token 8d5f1b3d1b21165a84aa0f91c5b2a406
+openAIkey=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
+
+twilio account
+ali.abis@yahoo.com
+Password
+2025@Muscat
+
+Cloudary account
+ali.abis@yahoo.com
+Password
+2025@Muscat
+
+Cloudary env
+CLOUDINARY_CLOUD_NAME=dgfkci03z
+CLOUDINARY_API_KEY=832715722855692
+CLOUDINARY_API_SECRET= 7_l5ifkQmeU2bzPYMxqmwxnNTxM
+Api Envoirnment variable=CLOUDINARY_URL=cloudinary://832715722855692:7_l5ifkQmeU2bzPYMxqmwxnNTxM@dgfkci03z
+
+CLOUDINARY_CLOUD_NAME=your_cloud_name
+CLOUDINARY_API_KEY=your_api_key
+CLOUDINARY_API_SECRET=your_api_secret
