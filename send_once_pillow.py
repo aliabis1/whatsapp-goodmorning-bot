@@ -204,24 +204,80 @@ def fetch_unsplash_image() -> Image.Image:
 
 def compose_image_with_quote(bg_img: Image.Image, quote: str) -> Image.Image:
     """
-    Draw a soft white rounded card in the center with:
+    Draw a translucent rounded card with:
       - BIG 'Good morning'
       - quote below it
-    Text scales with image size and is outlined for readability.
+    Card height and quote font size auto-adjust so text never overflows.
     """
     bg_img = bg_img.convert("RGBA")
     W, H = bg_img.size
 
-    # ----- create translucent card overlay -----
-    overlay = Image.new("RGBA", bg_img.size, (0, 0, 0, 0))
-    draw_ov = ImageDraw.Draw(overlay)
-
+    # ----- base fonts + limits -----
+    max_card_height = int(H * 0.8)
     card_w = int(W * 0.86)
-    card_h = int(H * 0.40)
+    padding_v = 40  # vertical padding inside card
+
+    # initial font sizes
+    title_font_size = int(W * 0.10)
+    quote_font_size = int(W * 0.048)
+
+    # temp draw just for measuring
+    tmp_draw = ImageDraw.Draw(bg_img)
+
+    # keep shrinking quote font until everything fits in 80% of height
+    while True:
+        title_font = load_font(title_font_size, bold=True)
+        quote_font = load_font(quote_font_size, bold=False)
+
+        # measure title
+        t_box = tmp_draw.textbbox((0, 0), "Good morning", font=title_font)
+        t_h = t_box[3] - t_box[1]
+
+        # wrap quote with current font
+        max_quote_width = int(card_w * 0.88)
+        quote_lines = wrap_text(quote, quote_font, max_quote_width, tmp_draw)
+
+        line_height = quote_font_size + 6
+        total_q_height = line_height * len(quote_lines)
+
+        content_h = t_h + 30 + total_q_height  # title + gap + quote
+        card_h = content_h + padding_v * 2
+
+        if card_h <= max_card_height or quote_font_size <= int(W * 0.032):
+            # fits (or we hit minimum size)
+            break
+
+        # shrink quote font a bit and try again
+        quote_font_size = int(quote_font_size * 0.9)
+
+    # recompute with final sizes to be sure
+    title_font = load_font(title_font_size, bold=True)
+    quote_font = load_font(quote_font_size, bold=False)
+
+    t_box = tmp_draw.textbbox((0, 0), "Good morning", font=title_font)
+    t_w = t_box[2] - t_box[0]
+    t_h = t_box[3] - t_box[1]
+
+    max_quote_width = int(card_w * 0.88)
+    quote_lines = wrap_text(quote, quote_font, max_quote_width, tmp_draw)
+    line_height = quote_font_size + 6
+    total_q_height = line_height * len(quote_lines)
+    content_h = t_h + 30 + total_q_height
+    card_h = content_h + padding_v * 2
+
+    # clamp final card height
+    if card_h > max_card_height:
+        card_h = max_card_height
+
+    # center card vertically
     card_x0 = (W - card_w) // 2
     card_y0 = (H - card_h) // 2
     card_x1 = card_x0 + card_w
     card_y1 = card_y0 + card_h
+
+    # ----- draw translucent card -----
+    overlay = Image.new("RGBA", bg_img.size, (0, 0, 0, 0))
+    draw_ov = ImageDraw.Draw(overlay)
 
     draw_ov.rounded_rectangle(
         [card_x0, card_y0, card_x1, card_y1],
@@ -232,25 +288,12 @@ def compose_image_with_quote(bg_img: Image.Image, quote: str) -> Image.Image:
     bg_img = Image.alpha_composite(bg_img, overlay)
     draw = ImageDraw.Draw(bg_img)
 
-    # ----- font sizes scale with width -----
-    title_font_size = int(W * 0.10)   # bigger "Good morning"
-    quote_font_size = int(W * 0.048)
-
-    title_font = load_font(title_font_size, bold=True)
-    quote_font = load_font(quote_font_size, bold=False)
-
+    # ----- title -----
     title_text = "Good morning"
 
-    # ----- measure title -----
-    t_box = draw.textbbox((0, 0), title_text, font=title_font)
-    t_w = t_box[2] - t_box[0]
-    t_h = t_box[3] - t_box[1]
-
-    # position in the upper third of the card
     title_x = card_x0 + (card_w - t_w) // 2
-    title_y = card_y0 + int(card_h * 0.12)
+    title_y = card_y0 + padding_v
 
-    # ----- draw title with dark outline -----
     draw.text(
         (title_x, title_y),
         title_text,
@@ -260,14 +303,7 @@ def compose_image_with_quote(bg_img: Image.Image, quote: str) -> Image.Image:
         stroke_fill="white",
     )
 
-    # ----- wrap quote to fit inside card -----
-    max_quote_width = int(card_w * 0.88)
-    quote_lines = wrap_text(quote, quote_font, max_quote_width, draw)
-
-    # height for all lines
-    line_height = quote_font_size + 6
-    total_q_height = line_height * len(quote_lines)
-
+    # ----- quote -----
     quote_start_y = title_y + t_h + 30
     current_y = quote_start_y
 
@@ -284,7 +320,8 @@ def compose_image_with_quote(bg_img: Image.Image, quote: str) -> Image.Image:
         )
         current_y += line_height
 
-    return bg_img.convert("RGB")  # for JPEG upload
+    return bg_img.convert("RGB")
+
 
 
 # -------------------- CLOUDINARY UPLOAD --------------------
@@ -332,10 +369,7 @@ def main():
     final_img = compose_image_with_quote(bg, quote)
     url = upload_to_cloudinary(final_img)
 
-    # Final WhatsApp caption (no duplicate 'Good morning' in quote)
-    caption = f"🌞 Good morning!\n{quote}"
+    # Keep caption simple – no quote duplication
+    caption = "🌞 Good morning!"
     send_whatsapp(caption, url)
 
-
-if __name__ == "__main__":
-    main()
