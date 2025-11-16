@@ -1,345 +1,341 @@
-# send_once_pillow.py
-# WhatsApp Good Morning bot with:
-# - Unsplash API backgrounds (soft, aesthetic)
-# - Deep varied quotes (life lessons, hardships, integrity, friendship, humanity, wellbeing, etc.)
-# - Pillow text overlay (script "Good morning" + centered quote)
-
 import os
-import io
-import time
-import re
 import random
 import textwrap
-import datetime
+from io import BytesIO
 
+import requests
 from dotenv import load_dotenv
-from twilio.rest import Client
 from openai import OpenAI
+from twilio.rest import Client
+from PIL import Image, ImageDraw, ImageFont
+
 import cloudinary
 import cloudinary.uploader
-import requests
-from PIL import Image, ImageDraw, ImageFont, ImageOps
 
-# -------------------------------------------------------------------
-# Load environment
-# -------------------------------------------------------------------
+
+# -------------------- ENV & CLIENT SETUP --------------------
+
 load_dotenv()
 
-CAPTION_MODE = "short"        # "none" | "short" | "full"
-MAX_RETRIES  = 8              # retries for Unsplash API
-
-# Curated queries matching your aesthetic (soft, pastel, calm)
-UNSPLASH_QUERIES = [
-    "pastel sunrise ocean minimal",
-    "lavender sky morning aesthetic",
-    "pink sunrise beach soft focus",
-    "calm ocean pastel horizon",
-    "bokeh flowers morning light",
-    "poppies field pastel aesthetic",
-    "misty mountains soft light",
-    "calm lake reflection sunrise",
-    "foggy forest minimal morning",
-    "soft floral background dreamy",
-    "wheat field sunrise pastel",
-]
-
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 UNSPLASH_ACCESS_KEY = os.getenv("UNSPLASH_ACCESS_KEY")
 
-# -------------------------------------------------------------------
-# Clients
-# -------------------------------------------------------------------
-twilio = Client(os.getenv("TWILIO_ACCOUNT_SID"), os.getenv("TWILIO_AUTH_TOKEN"))
-oai = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+CLOUDINARY_CLOUD_NAME = os.getenv("CLOUDINARY_CLOUD_NAME")
+CLOUDINARY_API_KEY = os.getenv("CLOUDINARY_API_KEY")
+CLOUDINARY_API_SECRET = os.getenv("CLOUDINARY_API_SECRET")
+
+TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID")
+TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN")
+WHATSAPP_FROM = os.getenv("WHATSAPP_FROM")
+WHATSAPP_TO = os.getenv("WHATSAPP_TO")
+
+if not OPENAI_API_KEY:
+    raise RuntimeError("OPENAI_API_KEY is not set in .env")
+
+if not UNSPLASH_ACCESS_KEY:
+    raise RuntimeError("UNSPLASH_ACCESS_KEY is not set in .env")
+
+if not CLOUDINARY_CLOUD_NAME or not CLOUDINARY_API_KEY or not CLOUDINARY_API_SECRET:
+    raise RuntimeError("Cloudinary credentials are missing in .env")
+
+if not TWILIO_ACCOUNT_SID or not TWILIO_AUTH_TOKEN:
+    raise RuntimeError("Twilio credentials are missing in .env")
+
+if not WHATSAPP_FROM or not WHATSAPP_TO:
+    raise RuntimeError("WhatsApp FROM/TO numbers are missing in .env")
+
+
+oai = OpenAI(api_key=OPENAI_API_KEY)
 
 cloudinary.config(
-    cloud_name=os.getenv("CLOUDINARY_CLOUD_NAME"),
-    api_key=os.getenv("CLOUDINARY_API_KEY"),
-    api_secret=os.getenv("CLOUDINARY_API_SECRET"),
-    secure=True,
+    cloud_name=CLOUDINARY_CLOUD_NAME,
+    api_key=CLOUDINARY_API_KEY,
+    api_secret=CLOUDINARY_API_SECRET,
 )
 
-# -------------------------------------------------------------------
-# Time helper
-# -------------------------------------------------------------------
-def muscat_now():
-    return datetime.datetime.utcnow() + datetime.timedelta(hours=4)
 
-# -------------------------------------------------------------------
-# Quote generation (FINAL VERSION)
-# -------------------------------------------------------------------
+# -------------------- FONT HELPERS --------------------
+
+def load_font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont:
+    """
+    Try a few common fonts so it works on Windows + GitHub Actions (Ubuntu).
+    Fallback to default bitmap font if none are found.
+    """
+    candidates = []
+
+    if bold:
+        candidates.extend([
+            "arialbd.ttf",  # Windows bold Arial
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        ])
+    else:
+        candidates.extend([
+            "arial.ttf",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        ])
+
+    for path in candidates:
+        try:
+            return ImageFont.truetype(path, size)
+        except OSError:
+            continue
+
+    # Last resort
+    return ImageFont.load_default()
+
+
+def wrap_text(text: str, font: ImageFont.ImageFont, max_width: int, draw: ImageDraw.ImageDraw):
+    """
+    Simple word-wrap so the quote stays nicely inside the card.
+    """
+    words = text.split()
+    lines = []
+    current = []
+
+    for w in words:
+        current.append(w)
+        trial = " ".join(current)
+        w_box = draw.textbbox((0, 0), trial, font=font)
+        if w_box[2] - w_box[0] > max_width:  # too wide
+            # remove last word and start new line
+            current.pop()
+            lines.append(" ".join(current))
+            current = [w]
+
+    if current:
+        lines.append(" ".join(current))
+
+    return lines
+
+
+# -------------------- QUOTE GENERATION --------------------
+
+TOPICS = [
+    "life lessons and growth",
+    "hardship, struggle, and resilience",
+    "kindness and compassion",
+    "integrity and doing the right thing",
+    "friendship and meaningful connections",
+    "humanity and empathy",
+    "gratitude and contentment",
+    "well-being, balance, and inner peace",
+]
+
+
 def get_quote_via_api() -> str:
     """
-    Generate a deep, varied quote with strong anti-repetition rules.
-    We ask for 5 quotes and randomly pick one.
+    Ask OpenAI for one short, original quote.
+    No greetings, no day of week, no repeated template phrases.
     """
+    topic = random.choice(TOPICS)
 
-    SYS = """
-You are a quote writer.
+    system_prompt = (
+        "You generate original, thoughtful quotes suitable for a good-morning image.\n"
+        "Requirements:\n"
+        "- 1 to 3 sentences only.\n"
+        "- Focus on deep but simple wisdom about everyday life.\n"
+        "- Today’s theme: " + topic + ".\n"
+        "- Do NOT mention the time of day, morning, dawn, today, or any weekday.\n"
+        "- Do NOT start with stock phrases like 'In the quiet...', "
+        "'In the gentle embrace...', or similar repeated openings.\n"
+        "- Avoid cliches and greeting phrases like 'Good morning', 'Have a great day'.\n"
+        "- Write in clear, natural language — no quotes around the text, no author name.\n"
+        "- Vary the rhythm and structure from one quote to another."
+    )
 
-Write deep, meaningful, ORIGINAL motivational quotes.
-
-STYLE:
-- Practical and punchy, not dreamy or poetic.
-- Feels like something a wise mentor or self-growth author would say.
-- Simple language but emotionally strong.
-- Max 18–22 words per quote.
-- Must fit cleanly on a motivational image.
-
-TOPICS (mix these, choose 1 per quote):
-- Life lessons
-- Hardship & resilience
-- Integrity & character
-- Humanity & kindness
-- Friendship & loyalty
-- Self-worth & boundaries
-- Consistency & discipline
-- Emotional strength
-- Wellbeing & mental clarity
-
-STRICT RULES for each quote:
-- 1–2 sentences only.
-- No emojis.
-- Do NOT mention morning, sunrise, dawn, sunset, night, or any time of day.
-- Do NOT mention weekdays or dates.
-- Do NOT include the words "good morning".
-- Avoid clichés such as “new beginnings”, “fresh start”, “rise and shine”, “follow your dreams”.
-- Avoid starting with: "In the", "In this", "Sometimes", "When we", "When you", "As we", "As you", "There is", "Life is".
-- Avoid metaphors about weather, sky, light, breeze, horizon, canvas, oceans of time, etc.
-- No rhymes. No hashtags. No exclamation overload.
-- Each quote must have a clearly different structure and wording from the others.
-
-OUTPUT:
-- Return exactly 5 different quotes.
-- Each quote on its own separate line.
-- No numbers, bullets, dashes or quote marks around them.
-    """.strip()
-
-    user_msg = "Write 5 different quotes now, following all the rules."
+    user_prompt = "Give me ONE quote that follows the rules. Return only the quote text."
 
     resp = oai.chat.completions.create(
         model="gpt-4o-mini",
         messages=[
-            {"role": "system", "content": SYS},
-            {"role": "user", "content": user_msg},
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
         ],
-        temperature=1.0,  # higher temperature for more variety
+        temperature=0.9,
+        max_tokens=80,
     )
 
-    raw = resp.choices[0].message.content.strip()
+    quote = resp.choices[0].message.content.strip()
+    quote = quote.strip('"').strip("“”")
+    print(f"QUOTE CHOSEN: {quote}")
+    return quote
 
-    # Split into individual lines / quotes
-    lines = [line.strip() for line in raw.split("\n") if line.strip()]
 
-    # Clean any accidental numbering/bullets
-    cleaned = []
-    for line in lines:
-        # remove leading numbers / bullets like "1. ", "- ", "* "
-        line = re.sub(r'^[\-\*\d\.\)\s]+', '', line).strip()
-        if line:
-            cleaned.append(line)
+# -------------------- UNSPLASH + IMAGE COMPOSITION --------------------
 
-    if not cleaned:
-        # fallback in the rare case the API misbehaves
-        return "Discipline builds the life that motivation only talks about."
+UNSPLASH_QUERIES = [
+    "soft sunrise over fields, pastel tones, bokeh",
+    "misty mountains at dawn, warm light, calm",
+    "wildflowers in soft focus, golden hour, dreamy",
+    "gentle ocean waves at sunrise, pastel sky",
+    "forest path with rays of light, tranquil morning",
+    "wheat field in backlight, warm glow, bokeh",
+    "calm lake reflections, mountains, early light",
+    "wildflower meadow, soft blur, peaceful",
+]
 
-    # Randomly pick one so each run feels different
-    return random.choice(cleaned)
 
-# -------------------------------------------------------------------
-# Background image via Unsplash API
-# -------------------------------------------------------------------
-def _fetch_unsplash_via_api() -> Image.Image:
-    """
-    Fetch a random aesthetic landscape from Unsplash API using curated queries.
-    """
-    if not UNSPLASH_ACCESS_KEY:
-        raise RuntimeError("UNSPLASH_ACCESS_KEY is not set in .env")
+def fetch_unsplash_image() -> Image.Image:
+    query = random.choice(UNSPLASH_QUERIES)
+    print(f"[Unsplash API] Attempt 1/1, query='{query}'")
 
-    headers = {
-        "Accept-Version": "v1",
-        "Authorization": f"Client-ID {UNSPLASH_ACCESS_KEY}",
+    url = "https://api.unsplash.com/photos/random"
+    headers = {"Authorization": f"Client-ID {UNSPLASH_ACCESS_KEY}"}
+    params = {
+        "query": query,
+        "orientation": "landscape",
+        "content_filter": "high",
     }
 
-    for attempt in range(1, MAX_RETRIES + 1):
-        query = random.choice(UNSPLASH_QUERIES)
-        params = {
-            "query": query,
-            "orientation": "landscape",
-            "content_filter": "high",
-        }
-        print(f"[Unsplash API] Attempt {attempt}/{MAX_RETRIES}, query='{query}'")
-        try:
-            r = requests.get(
-                "https://api.unsplash.com/photos/random",
-                headers=headers,
-                params=params,
-                timeout=20,
-            )
-            if r.status_code != 200:
-                print(f"  ❌ Status {r.status_code}: {r.text[:120]} ... Retrying...")
-                time.sleep(0.8)
-                continue
+    r = requests.get(url, headers=headers, params=params, timeout=20)
+    r.raise_for_status()
+    data = r.json()
+    img_url = data["urls"]["regular"]
+    print(f"  ✔️ Got image URL: {img_url}")
 
-            data = r.json()
-            if isinstance(data, list) and data:
-                data = data[0]
+    img_resp = requests.get(img_url, timeout=20)
+    img_resp.raise_for_status()
+    img = Image.open(BytesIO(img_resp.content)).convert("RGBA")
 
-            img_url = data["urls"].get("regular") or data["urls"]["full"]
-            print("  ✔️ Got image URL:", img_url)
-
-            img_resp = requests.get(img_url, timeout=20)
-            img_resp.raise_for_status()
-            img = Image.open(io.BytesIO(img_resp.content)).convert("RGB")
-            return img
-
-        except Exception as e:
-            print(f"  ❌ Error: {e} — retrying...")
-            time.sleep(0.8)
-
-    raise RuntimeError("Failed to fetch an Unsplash image via API after retries.")
-
-def _get_background_image() -> Image.Image:
-    img = _fetch_unsplash_via_api()
-    img = ImageOps.fit(img, (1024, 1024), Image.LANCZOS)
+    # Normalize to 1024x1024 for consistency
+    img = img.resize((1024, 1024), Image.LANCZOS)
     return img
 
-# -------------------------------------------------------------------
-# Fonts & composition
-# -------------------------------------------------------------------
-def _load_font(size: int, script: bool = False) -> ImageFont.FreeTypeFont:
+
+def compose_image_with_quote(bg_img: Image.Image, quote: str) -> Image.Image:
     """
-    Try some common fonts. If not found, fall back to default.
-    script=True -> for 'Good morning'
-    script=False -> for body quote
+    Draw a soft white rounded card in the center with:
+      - BIG 'Good morning'
+      - quote below it
+    Text scales with image size and is outlined for readability.
     """
-    if script:
-        candidates = [
-            "C:/Windows/Fonts/Segoe Script.ttf",
-            "C:/Windows/Fonts/segoesc.ttf",
-            "/System/Library/Fonts/Supplemental/SnellRoundhand.ttf",
-            "/System/Library/Fonts/Supplemental/Brush Script.ttf",
-        ]
-    else:
-        candidates = [
-            "C:/Windows/Fonts/SegoeUI.ttf",
-            "C:/Windows/Fonts/Arial.ttf",
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-            "/System/Library/Fonts/Supplemental/Arial.ttf",
-        ]
+    bg_img = bg_img.convert("RGBA")
+    W, H = bg_img.size
 
-    for path in candidates:
-        if os.path.exists(path):
-            return ImageFont.truetype(path, size)
+    # ----- create translucent card overlay -----
+    overlay = Image.new("RGBA", bg_img.size, (0, 0, 0, 0))
+    draw_ov = ImageDraw.Draw(overlay)
 
-    return ImageFont.load_default()
+    card_w = int(W * 0.86)
+    card_h = int(H * 0.40)
+    card_x0 = (W - card_w) // 2
+    card_y0 = (H - card_h) // 2
+    card_x1 = card_x0 + card_w
+    card_y1 = card_y0 + card_h
 
-def compose_image_with_pillow(quote_text: str) -> Image.Image:
-    base = _get_background_image()
+    draw_ov.rounded_rectangle(
+        [card_x0, card_y0, card_x1, card_y1],
+        radius=int(card_h * 0.2),
+        fill=(255, 255, 255, 220),
+    )
 
-    W, H = base.size
-    base_rgba = base.convert("RGBA")
-    overlay = Image.new("RGBA", base_rgba.size, (0, 0, 0, 0))
-    draw = ImageDraw.Draw(overlay)
+    bg_img = Image.alpha_composite(bg_img, overlay)
+    draw = ImageDraw.Draw(bg_img)
 
-    # Typography
-    title_font = _load_font(max(48, W // 12), script=True)   # script-style "Good morning"
-    body_font  = _load_font(max(32, W // 22), script=False)  # clean sans-serif
+    # ----- font sizes scale with width -----
+    title_font_size = int(W * 0.10)   # bigger "Good morning"
+    quote_font_size = int(W * 0.048)
+
+    title_font = load_font(title_font_size, bold=True)
+    quote_font = load_font(quote_font_size, bold=False)
 
     title_text = "Good morning"
 
-    # Wrap quote
-    body_lines = textwrap.wrap(quote_text, width=26)
+    # ----- measure title -----
+    t_box = draw.textbbox((0, 0), title_text, font=title_font)
+    t_w = t_box[2] - t_box[0]
+    t_h = t_box[3] - t_box[1]
 
-    # Colors
-    TEXT_COLOR   = (70, 60, 130, 255)    # soft purple
-    BOX_COLOR    = (255, 255, 255, 210)  # semi-transparent white
-    SHADOW_COLOR = (0, 0, 0, 80)         # subtle shadow
+    # position in the upper third of the card
+    title_x = card_x0 + (card_w - t_w) // 2
+    title_y = card_y0 + int(card_h * 0.12)
 
-    # Measure text
-    title_box = draw.textbbox((0, 0), title_text, font=title_font)
-    title_w = title_box[2] - title_box[0]
-    title_h = title_box[3] - title_box[1]
-
-    line_boxes   = [draw.textbbox((0, 0), line, font=body_font) for line in body_lines]
-    line_sizes   = [(b[2] - b[0], b[3] - b[1]) for b in line_boxes]
-    line_heights = [h for (_, h) in line_sizes]
-    body_h = sum(line_heights) + 10 * max(0, (len(line_heights) - 1))
-
-    margin    = int(W * 0.08)
-    box_width = W - 2 * margin
-    box_height = title_h + 30 + body_h + 40
-
-    x0 = margin
-    y0 = H // 2 - box_height // 2  # center vertically
-
-    # Rounded semi-transparent box
-    draw.rounded_rectangle(
-        (x0, y0, x0 + box_width, y0 + box_height),
-        radius=35,
-        fill=BOX_COLOR,
+    # ----- draw title with dark outline -----
+    draw.text(
+        (title_x, title_y),
+        title_text,
+        font=title_font,
+        fill=(65, 42, 94),        # soft purple
+        stroke_width=2,
+        stroke_fill="white",
     )
 
-    # Title (centered)
-    title_x = W // 2 - title_w // 2
-    title_y = y0 + 20
+    # ----- wrap quote to fit inside card -----
+    max_quote_width = int(card_w * 0.88)
+    quote_lines = wrap_text(quote, quote_font, max_quote_width, draw)
 
-    draw.text((title_x + 2, title_y + 2), title_text, font=title_font, fill=SHADOW_COLOR)
-    draw.text((title_x,       title_y),    title_text, font=title_font, fill=TEXT_COLOR)
+    # height for all lines
+    line_height = quote_font_size + 6
+    total_q_height = line_height * len(quote_lines)
 
-    # Body (centered)
-    text_y = title_y + title_h + 15
-    for (line, (lw, lh)) in zip(body_lines, line_sizes):
-        line_x = W // 2 - lw // 2
-        draw.text((line_x + 1, text_y + 1), line, font=body_font, fill=SHADOW_COLOR)
-        draw.text((line_x,       text_y),    line, font=body_font, fill=TEXT_COLOR)
-        text_y += lh + 10
+    quote_start_y = title_y + t_h + 30
+    current_y = quote_start_y
 
-    composed = Image.alpha_composite(base_rgba, overlay).convert("RGB")
-    return composed
+    for line in quote_lines:
+        q_box = draw.textbbox((0, 0), line, font=quote_font)
+        q_w = q_box[2] - q_box[0]
+        q_x = card_x0 + (card_w - q_w) // 2
 
-# -------------------------------------------------------------------
-# Cloudinary + WhatsApp
-# -------------------------------------------------------------------
-def upload_to_cloudinary(pil_image: Image.Image) -> str:
-    buf = io.BytesIO()
-    pil_image.save(buf, format="JPEG", quality=90)
-    buf.seek(0)
-    res = cloudinary.uploader.upload(
-        buf,
+        draw.text(
+            (q_x, current_y),
+            line,
+            font=quote_font,
+            fill=(60, 60, 80),
+        )
+        current_y += line_height
+
+    return bg_img.convert("RGB")  # for JPEG upload
+
+
+# -------------------- CLOUDINARY UPLOAD --------------------
+
+def upload_to_cloudinary(img: Image.Image) -> str:
+    """
+    Upload the composed PIL image to Cloudinary and return the URL.
+    """
+    buffer = BytesIO()
+    img.save(buffer, format="JPEG", quality=95)
+    buffer.seek(0)
+
+    result = cloudinary.uploader.upload(
+        buffer,
         folder="whatsapp_agent_pillow",
         resource_type="image",
-        overwrite=True,
     )
-    return res["secure_url"]
+    url = result["secure_url"]
+    print(f"Image URL: {url}")
+    return url
 
-def make_caption(quote: str) -> str:
-    if CAPTION_MODE == "none":
-        return ""
-    if CAPTION_MODE == "short":
-        return "🌞 Good morning!"
-    return f"🌞 {quote}"
+
+# -------------------- TWILIO SEND --------------------
 
 def send_whatsapp(caption: str, media_url: str):
-    kwargs = {
-        "from_": os.getenv("WHATSAPP_FROM"),
-        "to":   os.getenv("WHATSAPP_TO"),
-        "media_url": [media_url],
-    }
-    if caption.strip():
-        kwargs["body"] = caption
-    msg = twilio.messages.create(**kwargs)
-    print("✔️ WhatsApp SID:", msg.sid)
+    client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
 
-# -------------------------------------------------------------------
-# Main
-# -------------------------------------------------------------------
-if __name__ == "__main__":
-    quote  = get_quote_via_api()
-    print("QUOTE CHOSEN:", quote)
-    img    = compose_image_with_pillow(quote)
-    url    = upload_to_cloudinary(img)
-    caption = make_caption(quote)
+    # Optional debug (doesn't print secrets)
+    print(f"Sending WhatsApp from {WHATSAPP_FROM} to {WHATSAPP_TO} ...")
 
-    print("Image URL:", url)
+    msg = client.messages.create(
+        from_=WHATSAPP_FROM,
+        to=WHATSAPP_TO,
+        body=caption,
+        media_url=[media_url],
+    )
+    print(f"Twilio message SID: {msg.sid}")
+
+
+# -------------------- MAIN --------------------
+
+def main():
+    quote = get_quote_via_api()
+    bg = fetch_unsplash_image()
+    final_img = compose_image_with_quote(bg, quote)
+    url = upload_to_cloudinary(final_img)
+
+    # Final WhatsApp caption (no duplicate 'Good morning' in quote)
+    caption = f"🌞 Good morning!\n{quote}"
     send_whatsapp(caption, url)
-    print("🎉 Sent upgraded aesthetic image + varied quote.")
+
+
+if __name__ == "__main__":
+    main()
