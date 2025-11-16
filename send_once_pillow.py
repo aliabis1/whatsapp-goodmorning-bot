@@ -373,3 +373,7 @@ def main():
     caption = "🌞 Good morning!"
     send_whatsapp(caption, url)
 
+
+if __name__ == "__main__":
+    main()
+
