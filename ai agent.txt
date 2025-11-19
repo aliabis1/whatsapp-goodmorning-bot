@@ -22,3 +22,13 @@ Api Envoirnment variable=CLOUDINARY_URL=cloudinary://832715722855692:7_l5ifkQmeU
 CLOUDINARY_CLOUD_NAME=your_cloud_name
 CLOUDINARY_API_KEY=your_api_key
 CLOUDINARY_API_SECRET=your_api_secret
+
+n8n
+aliabis1@gmail.com
+2025@Muscat
+thrix
+
+opeanAi
+aliabis1@gmail.com
+
+Unsplash

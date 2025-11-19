@@ -205,7 +205,7 @@ def fetch_unsplash_image() -> Image.Image:
 def compose_image_with_quote(bg_img: Image.Image, quote: str) -> Image.Image:
     """
     Draw a translucent rounded card with:
-      - BIG 'Good morning'
+      - BIG 'Good Morning'
       - quote below it
     Card height and quote font size auto-adjust so text never overflows.
     """
