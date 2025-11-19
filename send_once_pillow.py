@@ -130,15 +130,15 @@ def get_quote_via_api() -> str:
     topic = random.choice(TOPICS)
 
     system_prompt = (
-        "You generate original, thoughtful quotes suitable for a good-morning image.\n"
+        "You generate original, thoughtful quotes suitable for a good-Morning image.\n"
         "Requirements:\n"
         "- 1 to 3 sentences only.\n"
         "- Focus on deep but simple wisdom about everyday life.\n"
         "- Today’s theme: " + topic + ".\n"
-        "- Do NOT mention the time of day, morning, dawn, today, or any weekday.\n"
+        "- Do NOT mention the time of day, Morning, dawn, today, or any weekday.\n"
         "- Do NOT start with stock phrases like 'In the quiet...', "
         "'In the gentle embrace...', or similar repeated openings.\n"
-        "- Avoid cliches and greeting phrases like 'Good morning', 'Have a great day'.\n"
+        "- Avoid cliches and greeting phrases like 'Good Morning', 'Have a great day'.\n"
         "- Write in clear, natural language — no quotes around the text, no author name.\n"
         "- Vary the rhythm and structure from one quote to another."
     )
@@ -168,7 +168,7 @@ UNSPLASH_QUERIES = [
     "misty mountains at dawn, warm light, calm",
     "wildflowers in soft focus, golden hour, dreamy",
     "gentle ocean waves at sunrise, pastel sky",
-    "forest path with rays of light, tranquil morning",
+    "forest path with rays of light, tranquil Morning",
     "wheat field in backlight, warm glow, bokeh",
     "calm lake reflections, mountains, early light",
     "wildflower meadow, soft blur, peaceful",
@@ -230,7 +230,7 @@ def compose_image_with_quote(bg_img: Image.Image, quote: str) -> Image.Image:
         quote_font = load_font(quote_font_size, bold=False)
 
         # measure title
-        t_box = tmp_draw.textbbox((0, 0), "Good morning", font=title_font)
+        t_box = tmp_draw.textbbox((0, 0), "Good Morning", font=title_font)
         t_h = t_box[3] - t_box[1]
 
         # wrap quote with current font
@@ -254,7 +254,7 @@ def compose_image_with_quote(bg_img: Image.Image, quote: str) -> Image.Image:
     title_font = load_font(title_font_size, bold=True)
     quote_font = load_font(quote_font_size, bold=False)
 
-    t_box = tmp_draw.textbbox((0, 0), "Good morning", font=title_font)
+    t_box = tmp_draw.textbbox((0, 0), "Good Morning", font=title_font)
     t_w = t_box[2] - t_box[0]
     t_h = t_box[3] - t_box[1]
 
@@ -289,7 +289,7 @@ def compose_image_with_quote(bg_img: Image.Image, quote: str) -> Image.Image:
     draw = ImageDraw.Draw(bg_img)
 
     # ----- title -----
-    title_text = "Good morning"
+    title_text = "Good Morning"
 
     title_x = card_x0 + (card_w - t_w) // 2
     title_y = card_y0 + padding_v
@@ -370,7 +370,7 @@ def main():
     url = upload_to_cloudinary(final_img)
 
     # Keep caption simple – no quote duplication
-    caption = "🌞 Good morning!"
+    caption = "🌞 Good Morning!"
     send_whatsapp(caption, url)
 
 
